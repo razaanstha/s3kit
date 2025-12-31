@@ -1,30 +1,26 @@
 name: Publish to NPM
+
 on:
   release:
     types: [published]
+
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20.x'
-          registry-url: 'https://registry.npmjs.org'
-      
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      
-      # Clean install to avoid Rollup optional dependency bug
-      - run: rm -rf node_modules package-lock.json bun.lockb
-      - run: bun install
-      
-      # Build the package
-      - run: bun run build
-      
-      # Publish to npm registry
-      - run: bun publish
+          registry-url: 'https://registry.npmjs.org/'
+          cache: 'npm'
+
+      - run: rm -rf node_modules package-lock.json
+      - run: npm install
+
+      - run: npm run build
+
+      - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

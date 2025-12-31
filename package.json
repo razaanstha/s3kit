@@ -7,6 +7,14 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "homepage": "https://github.com/razaanstha/s3kit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/razaanstha/s3kit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/razaanstha/s3kit/issues"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
