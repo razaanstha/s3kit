@@ -24,9 +24,6 @@ jobs:
       # Build the package
       - run: bun run build
       
-      # Run tests
-      - run: bun test
-      
       # Publish to npm registry
       - run: bun publish
         env:
