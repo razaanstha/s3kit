@@ -1,0 +1,6 @@
+{
+  "ignorePatterns": ["dist/**", "node_modules/**", "examples/**/.next/**", "coverage/**"],
+  "semi": false,
+  "singleQuote": true,
+  "jsxSingleQuote": false
+}
