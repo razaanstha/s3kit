@@ -17,7 +17,8 @@ jobs:
         with:
           bun-version: latest
       
-      # Install dependencies with bun
+      # Clean install to avoid Rollup optional dependency bug
+      - run: rm -rf node_modules package-lock.json bun.lockb
       - run: bun install
       
       # Build the package
