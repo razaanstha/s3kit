@@ -1,3 +1,5 @@
+![s3kit-demo](s3kit-demo-trimmed.gif)
+
 # s3kit
 
 A secure, server-driven, framework-agnostic S3 file manager with a React UI.
