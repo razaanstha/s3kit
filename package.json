@@ -58,8 +58,8 @@
     "dev": "tsup --watch",
     "test": "npm run build && node --test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "oxlint": "bunx oxlint ./src",
-    "oxfmt": "bunx oxfmt ./src",
+    "oxlint": "bunx oxlint ./src ./examples",
+    "oxfmt": "bunx oxfmt ./src ./examples",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },

@@ -17,7 +17,12 @@ export function UiIcon(props: {
   iconStyle?: CSSProperties
 }) {
   const { icon: Icon, size, weight, color, boxed = false, boxStyle, iconStyle } = props
-  const iconProps: { size: number; weight?: any; color?: string; style: CSSProperties } = {
+  const iconProps: {
+    size: number
+    weight?: any
+    color?: string
+    style: CSSProperties
+  } = {
     size,
     style: { display: 'block', ...iconStyle },
     ...(weight !== undefined ? { weight } : {}),
@@ -36,9 +41,9 @@ export function UiIcon(props: {
         verticalAlign: 'middle',
         ...(boxed
           ? {
-              backgroundColor: 'var(--toko-icon-bg, transparent)',
-              border: '1px solid var(--toko-icon-border, transparent)',
-              borderRadius: 'var(--toko-icon-radius, 8px)',
+              backgroundColor: 'var(--s3kit-icon-bg, transparent)',
+              border: '1px solid var(--s3kit-icon-border, transparent)',
+              borderRadius: 'var(--s3kit-icon-radius, 8px)',
               boxSizing: 'border-box',
             }
           : {}),

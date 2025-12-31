@@ -136,8 +136,14 @@ export function FileManager({
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lastSelected, setLastSelected] = useState<S3Entry | null>(null)
   const [hoverRow, setHoverRow] = useState<string | null>(null)
-  const [previewData, setPreviewData] = useState<{ url: string; entry: S3Entry } | null>(null)
-  const [previewDisplay, setPreviewDisplay] = useState<{ url: string; entry: S3Entry } | null>(null)
+  const [previewData, setPreviewData] = useState<{
+    url: string
+    entry: S3Entry
+  } | null>(null)
+  const [previewDisplay, setPreviewDisplay] = useState<{
+    url: string
+    entry: S3Entry
+  } | null>(null)
   const [isPreviewClosing, setIsPreviewClosing] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(320)
   const [isResizing, setIsResizing] = useState(false)
@@ -614,7 +620,10 @@ export function FileManager({
     if (selected.size === 1 && lastSelected?.type === 'file' && selected.has(lastSelected.path)) {
       const fetchPreview = async () => {
         try {
-          const out = await client.getPreviewUrl({ path: lastSelected.path, inline: true })
+          const out = await client.getPreviewUrl({
+            path: lastSelected.path,
+            inline: true,
+          })
           setPreviewData({ url: out.url, entry: lastSelected })
         } catch (e) {
           console.error('Failed to load preview', e)
@@ -800,8 +809,7 @@ export function FileManager({
     )
     const uniqueName = buildUniqueName(renameName.trim(), existingNames)
     const nextPath = parent ? joinPath(parent, uniqueName) : uniqueName
-    const newPath =
-      target.type === 'folder' ? `${nextPath.replace(/\/+$/, '')}/` : nextPath
+    const newPath = target.type === 'folder' ? `${nextPath.replace(/\/+$/, '')}/` : nextPath
     if (newPath === oldPath) {
       setRenameOpen(false)
       setRenameTarget(null)
@@ -955,7 +963,12 @@ export function FileManager({
           setUploadItems((prev) =>
             prev.map((item) =>
               item.path === p
-                ? { ...item, loaded: item.total, status: 'done', error: undefined }
+                ? {
+                    ...item,
+                    loaded: item.total,
+                    status: 'done',
+                    error: undefined,
+                  }
                 : item,
             ),
           ),
@@ -1018,7 +1031,12 @@ export function FileManager({
           setUploadItems((prev) =>
             prev.map((entry) =>
               entry.path === p
-                ? { ...entry, loaded: entry.total, status: 'done', error: undefined }
+                ? {
+                    ...entry,
+                    loaded: entry.total,
+                    status: 'done',
+                    error: undefined,
+                  }
                 : entry,
             ),
           ),
@@ -1177,7 +1195,10 @@ export function FileManager({
     if (cachedUrls.length !== files.length) {
       if (files.length === 1) {
         try {
-          const out = await client.getPreviewUrl({ path: files[0]!.path, inline: false })
+          const out = await client.getPreviewUrl({
+            path: files[0]!.path,
+            inline: false,
+          })
           downloadUrlCacheRef.current.set(files[0]!.path, out.url)
           const a = document.createElement('a')
           a.href = out.url
@@ -1304,7 +1325,10 @@ export function FileManager({
     const run = async () => {
       for (const entry of toFetch) {
         try {
-          const out = await client.getPreviewUrl({ path: entry.path, inline: true })
+          const out = await client.getPreviewUrl({
+            path: entry.path,
+            inline: true,
+          })
           if (cancelled) return
           setInlinePreviews((prev) =>
             prev[entry.path] ? prev : { ...prev, [entry.path]: out.url },
@@ -1376,14 +1400,14 @@ export function FileManager({
         maxHeight: isMobile ? '100%' : '100vh',
         ...style,
         ...({
-          '--toko-bg': theme.bg,
-          '--toko-bg-secondary': theme.bgSecondary,
-          '--toko-border': theme.border,
-          '--toko-text': theme.text,
-          '--toko-text-secondary': theme.textSecondary,
-          '--toko-icon-bg': theme.bgSecondary,
-          '--toko-icon-border': theme.border,
-          '--toko-icon-radius': '8px',
+          '--s3kit-bg': theme.bg,
+          '--s3kit-bg-secondary': theme.bgSecondary,
+          '--s3kit-border': theme.border,
+          '--s3kit-text': theme.text,
+          '--s3kit-text-secondary': theme.textSecondary,
+          '--s3kit-icon-bg': theme.bgSecondary,
+          '--s3kit-icon-border': theme.border,
+          '--s3kit-icon-radius': '8px',
         } as unknown as CSSProperties),
       }}
       className={`${fileManagerStyles.root}${className ? ` ${className}` : ''}`}
@@ -1400,7 +1424,9 @@ export function FileManager({
         className={fileManagerStyles.main}
         style={{
           ...(isDragOver
-            ? { backgroundColor: theme.bg === '#ffffff' ? '#fafafa' : '#1a1a1a' }
+            ? {
+                backgroundColor: theme.bg === '#ffffff' ? '#fafafa' : '#1a1a1a',
+              }
             : undefined),
         }}
       >
@@ -1413,7 +1439,14 @@ export function FileManager({
           }}
         >
           {/* Left side: Navigation tabs + Breadcrumbs */}
-          <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
             {/* Navigation Tabs */}
             <div
               className={fileManagerStyles.navTabs}
@@ -1634,7 +1667,14 @@ export function FileManager({
             )}
 
             {(showSort || (mode !== 'viewer' && showViewSwitcher)) && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexShrink: 0,
+                }}
+              >
                 {mode !== 'viewer' && showViewSwitcher && (
                   <div
                     style={{
@@ -1732,7 +1772,9 @@ export function FileManager({
               <UiIcon icon={MagnifyingGlass} size={14} />
               {searching
                 ? `Searching for "${searchQuery}"...`
-                : `Found ${currentEntries.length} result${currentEntries.length !== 1 ? 's' : ''} for "${searchQuery}"`}
+                : `Found ${currentEntries.length} result${
+                    currentEntries.length !== 1 ? 's' : ''
+                  } for "${searchQuery}"`}
             </div>
             {searchHasMore && (
               <div style={{ fontSize: 11, opacity: 0.7 }}>More results available</div>
@@ -1915,7 +1957,13 @@ export function FileManager({
           )}
 
           {loading || searching ? (
-            <div style={{ padding: 40, textAlign: 'center', color: theme.textSecondary }}>
+            <div
+              style={{
+                padding: 40,
+                textAlign: 'center',
+                color: theme.textSecondary,
+              }}
+            >
               {searching ? 'Searching...' : 'Loading...'}
             </div>
           ) : viewMode === 'grid' ? (
@@ -2571,13 +2619,23 @@ export function FileManager({
                           flexDirection: isMobile ? 'column' : 'row',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                          }}
+                        >
                           <UiIcon icon={Trash} size={20} weight="fill" color={theme.text} boxed />
                           {entryLabel}
                         </div>
                         {isMobile && (
                           <div
-                            style={{ fontSize: 11, color: theme.textSecondary, fontWeight: 400 }}
+                            style={{
+                              fontSize: 11,
+                              color: theme.textSecondary,
+                              fontWeight: 400,
+                            }}
                           >
                             Folder
                           </div>
@@ -2589,7 +2647,12 @@ export function FileManager({
 
                       {/* Size */}
                       {!isMobile && (
-                        <div style={{ color: theme.textSecondary, fontFamily: 'monospace' }}>
+                        <div
+                          style={{
+                            color: theme.textSecondary,
+                            fontFamily: 'monospace',
+                          }}
+                        >
                           --
                         </div>
                       )}
@@ -2653,7 +2716,13 @@ export function FileManager({
                           flexDirection: isMobile ? 'column' : 'row',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                          }}
+                        >
                           {entry.type === 'folder' ? (
                             isTrashFolder ? (
                               <UiIcon
@@ -2699,10 +2768,16 @@ export function FileManager({
                         </div>
                         {isMobile && (
                           <div
-                            style={{ fontSize: 11, color: theme.textSecondary, fontWeight: 400 }}
+                            style={{
+                              fontSize: 11,
+                              color: theme.textSecondary,
+                              fontWeight: 400,
+                            }}
                           >
                             {entry.type === 'file'
-                              ? `${entry.lastModified ? formatDate(entry.lastModified) : '--'} | ${formatBytes(entry.size || 0)}`
+                              ? `${
+                                  entry.lastModified ? formatDate(entry.lastModified) : '--'
+                                } | ${formatBytes(entry.size || 0)}`
                               : 'Folder'}
                           </div>
                         )}
@@ -2717,7 +2792,12 @@ export function FileManager({
                       )}
 
                       {!isMobile && (
-                        <div style={{ color: theme.textSecondary, fontFamily: 'monospace' }}>
+                        <div
+                          style={{
+                            color: theme.textSecondary,
+                            fontFamily: 'monospace',
+                          }}
+                        >
                           {entry.type === 'file' ? formatBytes(entry.size || 0) : '--'}
                         </div>
                       )}
@@ -2802,7 +2882,13 @@ export function FileManager({
                           flexDirection: isMobile ? 'column' : 'row',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                          }}
+                        >
                           {entry.type === 'folder' ? (
                             isTrashFolder ? (
                               <UiIcon
@@ -2848,10 +2934,16 @@ export function FileManager({
                         </div>
                         {isMobile && (
                           <div
-                            style={{ fontSize: 11, color: theme.textSecondary, fontWeight: 400 }}
+                            style={{
+                              fontSize: 11,
+                              color: theme.textSecondary,
+                              fontWeight: 400,
+                            }}
                           >
                             {entry.type === 'file'
-                              ? `${entry.lastModified ? formatDate(entry.lastModified) : '--'} | ${formatBytes(entry.size || 0)}`
+                              ? `${
+                                  entry.lastModified ? formatDate(entry.lastModified) : '--'
+                                } | ${formatBytes(entry.size || 0)}`
                               : 'Folder'}
                           </div>
                         )}
@@ -2868,7 +2960,12 @@ export function FileManager({
 
                       {/* Size */}
                       {!isMobile && (
-                        <div style={{ color: theme.textSecondary, fontFamily: 'monospace' }}>
+                        <div
+                          style={{
+                            color: theme.textSecondary,
+                            fontFamily: 'monospace',
+                          }}
+                        >
                           {entry.type === 'file' ? formatBytes(entry.size || 0) : '--'}
                         </div>
                       )}
@@ -3261,7 +3358,13 @@ export function FileManager({
           {(() => {
             if (currentEntries.length === 0 && !loading && !searching) {
               return (
-                <div style={{ padding: 40, textAlign: 'center', color: theme.textSecondary }}>
+                <div
+                  style={{
+                    padding: 40,
+                    textAlign: 'center',
+                    color: theme.textSecondary,
+                  }}
+                >
                   {searchQuery.trim() ? (
                     `No results found for "${searchQuery}"`
                   ) : view === 'trash' ? (
@@ -3329,7 +3432,9 @@ export function FileManager({
                 pointerEvents: isPreviewClosing ? 'none' : isSidebarVisible ? 'auto' : 'none',
                 width: sidebarWidth,
                 ...(isSidebarVisible
-                  ? { boxShadow: '0 0 0 1px rgba(0,0,0,0.03), -8px 0 24px rgba(0,0,0,0.08)' }
+                  ? {
+                      boxShadow: '0 0 0 1px rgba(0,0,0,0.03), -8px 0 24px rgba(0,0,0,0.08)',
+                    }
                   : {}),
               }}
             >
@@ -3398,7 +3503,11 @@ export function FileManager({
                   <img
                     src={previewDisplay.url}
                     alt="preview"
-                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      objectFit: 'contain',
+                    }}
                   />
                 ) : (
                   <UiIcon icon={FileText} size={64} weight="thin" color={theme.textSecondary} />
@@ -3407,12 +3516,23 @@ export function FileManager({
 
               <div className={fileManagerStyles.metadata} style={{ color: theme.text }}>
                 <h3
-                  style={{ margin: '0 0 20px', fontSize: 16, fontWeight: 600, color: theme.text }}
+                  style={{
+                    margin: '0 0 20px',
+                    fontSize: 16,
+                    fontWeight: 600,
+                    color: theme.text,
+                  }}
                 >
                   {previewDisplay.entry.name}
                 </h3>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: 20,
+                  }}
+                >
                   <div className={fileManagerStyles.metaItem}>
                     <div className={fileManagerStyles.metaLabel}>Type</div>
                     <div className={fileManagerStyles.metaValue}>
@@ -3445,7 +3565,14 @@ export function FileManager({
                   </div>
                 </div>
 
-                <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div
+                  style={{
+                    marginTop: 20,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
                   {view === 'files' ? (
                     <>
                       <Button
@@ -3526,7 +3653,14 @@ export function FileManager({
           }}
           autoFocus
         />
-        <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+        <div
+          style={{
+            marginTop: 20,
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 10,
+          }}
+        >
           <Button onClick={() => setCreateFolderOpen(false)} theme={theme}>
             Cancel
           </Button>
@@ -3567,7 +3701,14 @@ export function FileManager({
           disabled={isRenaming}
           autoFocus
         />
-        <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+        <div
+          style={{
+            marginTop: 20,
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 10,
+          }}
+        >
           <Button onClick={() => setRenameOpen(false)} theme={theme} disabled={isRenaming}>
             Cancel
           </Button>
@@ -3790,9 +3931,19 @@ export function FileManager({
                   return (
                     <div
                       key={item.path}
-                      style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'baseline',
+                          gap: 10,
+                        }}
+                      >
                         <div
                           style={{
                             flex: 1,
@@ -3872,7 +4023,8 @@ export function FileManager({
                 })}
                 {failedItems.length > 0 && (
                   <div style={{ fontSize: 11, color: theme.danger }}>
-                    {failedItems.length} upload{failedItems.length !== 1 ? 's' : ''} failed
+                    {failedItems.length} upload
+                    {failedItems.length !== 1 ? 's' : ''} failed
                   </div>
                 )}
               </div>
