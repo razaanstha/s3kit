@@ -7,7 +7,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "vercel-build": "npm run build"
+    "vercel-build": "next build --webpack"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.760.0",

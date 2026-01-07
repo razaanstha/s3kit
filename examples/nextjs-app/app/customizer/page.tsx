@@ -385,7 +385,6 @@ export function FileManagerDemo() {
             <div className={styles.panelBody}>
               <div className={styles.panelStack}>
                 <section className={styles.section}>
-                  <div className={styles.sectionTitle}>Preview</div>
                   <div className={styles.fieldGridTwo}>
                     <label className={styles.fieldLabel}>
                       <span className={styles.fieldHint}>Mode</span>
