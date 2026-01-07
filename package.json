@@ -1,6 +1,6 @@
 {
   "name": "s3kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Secure, server-driven, framework-agnostic S3 file manager (core + HTTP adapters + client helper).",
   "license": "MIT",
   "type": "module",
