@@ -3,12 +3,17 @@ import type {
   S3CreateFolderOptions,
   S3DeleteFilesOptions,
   S3DeleteFolderOptions,
+  S3FileAttributes,
+  S3FolderLock,
+  S3GetFolderLockOptions,
+  S3GetFileAttributesOptions,
   S3GetPreviewUrlOptions,
   S3ListOptions,
   S3MoveOptions,
   S3PrepareUploadsOptions,
   S3PreparedUpload,
   S3SearchOptions,
+  S3SetFileAttributesOptions,
 } from '../core/types'
 
 import type {
@@ -146,8 +151,29 @@ export class S3FileManagerClient {
     return fetchJson(this.f, this.endpoint('/preview'), options)
   }
 
+  getFolderLock(options: S3GetFolderLockOptions): Promise<S3FolderLock | null> {
+    return fetchJson(this.f, this.endpoint('/folder/lock/get'), options)
+  }
+
+  getFileAttributes(options: S3GetFileAttributesOptions): Promise<S3FileAttributes> {
+    return fetchJson(this.f, this.endpoint('/file/attributes/get'), options)
+  }
+
+  setFileAttributes(options: S3SetFileAttributesOptions): Promise<S3FileAttributes> {
+    return fetchJson(this.f, this.endpoint('/file/attributes/set'), options)
+  }
+
   async uploadFiles(args: {
-    files: Array<{ file: File; path: string; contentType?: string }>
+    files: Array<{
+      file: File
+      path: string
+      contentType?: string
+      cacheControl?: string
+      contentDisposition?: string
+      metadata?: Record<string, string>
+      expiresAt?: string | null
+      ifNoneMatch?: string
+    }>
     expiresInSeconds?: number
     hooks?: S3FileManagerClientHooks
     parallel?: number
@@ -156,6 +182,11 @@ export class S3FileManagerClient {
       items: args.files.map((f) => ({
         path: f.path,
         contentType: f.contentType ?? f.file.type,
+        ...(f.cacheControl !== undefined ? { cacheControl: f.cacheControl } : {}),
+        ...(f.contentDisposition !== undefined ? { contentDisposition: f.contentDisposition } : {}),
+        ...(f.metadata !== undefined ? { metadata: f.metadata } : {}),
+        ...(f.expiresAt !== undefined ? { expiresAt: f.expiresAt } : {}),
+        ...(f.ifNoneMatch !== undefined ? { ifNoneMatch: f.ifNoneMatch } : {}),
       })),
       ...(args.expiresInSeconds !== undefined ? { expiresInSeconds: args.expiresInSeconds } : {}),
     }

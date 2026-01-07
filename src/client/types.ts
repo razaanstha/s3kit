@@ -1,4 +1,6 @@
 import type {
+  S3FolderLock,
+  S3FileAttributes,
   S3GetPreviewUrlResult,
   S3ListResult,
   S3PreparedUpload,
@@ -31,3 +33,5 @@ export type S3FileManagerClientListResult = S3ListResult
 export type S3FileManagerClientSearchResult = S3SearchResult
 export type S3FileManagerClientPreviewResult = S3GetPreviewUrlResult
 export type S3FileManagerClientPreparedUpload = S3PreparedUpload
+export type S3FileManagerClientFileAttributes = S3FileAttributes
+export type S3FileManagerClientFolderLock = S3FolderLock

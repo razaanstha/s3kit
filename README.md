@@ -95,6 +95,9 @@ const manager = new S3FileManager(s3, {
   bucket: process.env.S3_BUCKET!,
   rootPrefix: 'uploads',
   authorizationMode: 'deny-by-default',
+  lockFolderMoves: true,
+  lockPrefix: '.s3kit/locks',
+  lockTtlSeconds: 60 * 15,
   hooks: {
     authorize: ({ ctx }) => Boolean(ctx.userId),
     allowAction: ({ action, path }) => {
@@ -153,16 +156,23 @@ Routes:
 - `POST /search`
 - `POST /folder/create`
 - `POST /folder/delete`
+- `POST /folder/lock/get`
 - `POST /files/delete`
 - `POST /files/copy`
 - `POST /files/move`
 - `POST /upload/prepare`
 - `POST /preview`
+- `POST /file/attributes/get`
+- `POST /file/attributes/set`
 
 Notes:
 
 - `POST /search` returns file entries in stable, S3 listing order (lexicographic by key/path) so pagination via `cursor` is deterministic.
 - `cursor` is the underlying S3 continuation token; pass `nextCursor` from the previous response to fetch the next page.
+- Conflict detection: pass `ifMatch` (ETag) for file `copy`, `move`, and `delete` to avoid overwriting if the object changed. A failed precondition returns `409 conflict`.
+- Conditional uploads: pass `ifNoneMatch: "*"` in `upload/prepare` items to enforce "only if not exists".
+- Folder lock status: `POST /folder/lock/get` returns lock metadata (or null) for folder rename operations.
+- File attributes: `POST /file/attributes/get` returns content headers, metadata, and `expiresAt`; `POST /file/attributes/set` updates them.
 
 ### Next.js (App Router) adapter
 
@@ -247,6 +257,8 @@ await client.uploadFiles({
     }
   }
 });
+
+const lock = await client.getFolderLock({ path: 'docs/' });
 ```
 
 ### Alternative client config

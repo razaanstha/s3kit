@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Button as BaseButton, Input, Select, Switch } from '@base-ui/react'
+import { Button as BaseButton, Input, Select, Switch, Toast } from '@base-ui/react'
 import { FileManager } from 's3kit/react'
 import styles from './Customizer.module.css'
 
@@ -23,30 +23,96 @@ const defaultToolbar = {
   breadcrumbs: true,
 }
 
+const defaultActions = {
+  upload: true,
+  createFolder: true,
+  delete: true,
+  rename: true,
+  move: true,
+  copy: true,
+  restore: true,
+}
+
+const defaultConfig = {
+  mode: 'manager' as const,
+  selection: 'multiple' as const,
+  viewMode: 'grid' as const,
+  theme: 'system' as const,
+  apiUrl: '/api/s3',
+  hideTrash: false,
+  filterExtensionsInput: '',
+  filterMimeTypesInput: '',
+}
+
+const hasOverrides = <T extends Record<string, unknown>>(current: T, defaults: T) =>
+  Object.entries(defaults).some(([key, value]) => current[key as keyof T] !== value)
+
+const setParamIfChanged = (
+  params: URLSearchParams,
+  key: string,
+  value: string,
+  defaultValue: string,
+) => {
+  if (value !== defaultValue) {
+    params.set(key, value)
+  }
+}
+
+const setParamIfNonEmpty = (params: URLSearchParams, key: string, value: string) => {
+  if (value.trim()) {
+    params.set(key, value)
+  }
+}
+
+const parseBooleanParam = (value: string | null, fallback: boolean) => {
+  if (value === '1') return true
+  if (value === '0') return false
+  return fallback
+}
+
+const setBooleanParamIfChanged = (
+  params: URLSearchParams,
+  key: string,
+  value: boolean,
+  defaultValue: boolean,
+) => {
+  if (value !== defaultValue) {
+    params.set(key, value ? '1' : '0')
+  }
+}
+
+const toastTimeoutMs = 2200
+
 export default function CustomizerPage() {
+  return (
+    <Toast.Provider timeout={toastTimeoutMs}>
+      <CustomizerContent />
+    </Toast.Provider>
+  )
+}
+
+function CustomizerContent() {
   const portalContainerRef = useRef<HTMLDivElement | null>(null)
+  const [isInitialized, setIsInitialized] = useState(false)
   const [labels, setLabels] = useState(defaultLabels)
   const [toolbar, setToolbar] = useState(defaultToolbar)
   const [panelOpen, setPanelOpen] = useState(false)
-  const [mode, setMode] = useState<'viewer' | 'picker' | 'manager'>('manager')
-  const [selection, setSelection] = useState<'single' | 'multiple'>('multiple')
-  const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid')
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system')
+  const [mode, setMode] = useState<'viewer' | 'picker' | 'manager'>(defaultConfig.mode)
+  const [selection, setSelection] = useState<'single' | 'multiple'>(defaultConfig.selection)
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(defaultConfig.viewMode)
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(defaultConfig.theme)
   const [prefersDark, setPrefersDark] = useState(false)
-  const [apiUrl, setApiUrl] = useState('/api/s3')
-  const [hideTrash, setHideTrash] = useState(false)
-  const [filterExtensionsInput, setFilterExtensionsInput] = useState('')
-  const [filterMimeTypesInput, setFilterMimeTypesInput] = useState('')
-  const [allowActions, setAllowActions] = useState({
-    upload: true,
-    createFolder: true,
-    delete: true,
-    rename: true,
-    move: true,
-    copy: true,
-    restore: true,
-  })
+  const [apiUrl, setApiUrl] = useState(defaultConfig.apiUrl)
+  const [hideTrash, setHideTrash] = useState(defaultConfig.hideTrash)
+  const [filterExtensionsInput, setFilterExtensionsInput] = useState(
+    defaultConfig.filterExtensionsInput,
+  )
+  const [filterMimeTypesInput, setFilterMimeTypesInput] = useState(
+    defaultConfig.filterMimeTypesInput,
+  )
+  const [allowActions, setAllowActions] = useState(defaultActions)
   const [copied, setCopied] = useState(false)
+  const { toasts, add: addToast } = Toast.useToastManager()
 
   const filterExtensions = useMemo(() => {
     const values = filterExtensionsInput
@@ -66,12 +132,128 @@ export default function CustomizerPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    setMode((params.get('mode') as 'viewer' | 'picker' | 'manager' | null) ?? defaultConfig.mode)
+    setSelection(
+      (params.get('selection') as 'single' | 'multiple' | null) ?? defaultConfig.selection,
+    )
+    setViewMode((params.get('view') as 'list' | 'grid' | null) ?? defaultConfig.viewMode)
+    setTheme((params.get('theme') as 'light' | 'dark' | 'system' | null) ?? defaultConfig.theme)
+    setApiUrl(params.get('api') ?? defaultConfig.apiUrl)
+    setHideTrash(parseBooleanParam(params.get('hideTrash'), defaultConfig.hideTrash))
+    setFilterExtensionsInput(params.get('ext') ?? '')
+    setFilterMimeTypesInput(params.get('mime') ?? '')
+    setLabels((prev) => {
+      const next = { ...prev }
+      Object.keys(defaultLabels).forEach((key) => {
+        const paramValue = params.get(`label_${key}`)
+        if (paramValue !== null) {
+          next[key as keyof typeof defaultLabels] = paramValue
+        }
+      })
+      return next
+    })
+    setToolbar((prev) => {
+      const next = { ...prev }
+      Object.keys(defaultToolbar).forEach((key) => {
+        const paramValue = params.get(`toolbar_${key}`)
+        if (paramValue !== null) {
+          next[key as keyof typeof defaultToolbar] = parseBooleanParam(
+            paramValue,
+            defaultToolbar[key as keyof typeof defaultToolbar],
+          )
+        }
+      })
+      return next
+    })
+    setAllowActions((prev) => {
+      const next = { ...prev }
+      Object.keys(defaultActions).forEach((key) => {
+        const paramValue = params.get(`action_${key}`)
+        if (paramValue !== null) {
+          next[key as keyof typeof defaultActions] = parseBooleanParam(
+            paramValue,
+            defaultActions[key as keyof typeof defaultActions],
+          )
+        }
+      })
+      return next
+    })
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     const update = () => setPrefersDark(media.matches)
     update()
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!isInitialized) {
+      setIsInitialized(true)
+      return
+    }
+    const params = new URLSearchParams()
+    setParamIfChanged(params, 'mode', mode, defaultConfig.mode)
+    setParamIfChanged(params, 'selection', selection, defaultConfig.selection)
+    setParamIfChanged(params, 'view', viewMode, defaultConfig.viewMode)
+    setParamIfChanged(params, 'theme', theme, defaultConfig.theme)
+    setParamIfChanged(params, 'api', apiUrl, defaultConfig.apiUrl)
+    setBooleanParamIfChanged(params, 'hideTrash', hideTrash, defaultConfig.hideTrash)
+    setParamIfNonEmpty(params, 'ext', filterExtensionsInput)
+    setParamIfNonEmpty(params, 'mime', filterMimeTypesInput)
+    if (hasOverrides(labels, defaultLabels)) {
+      Object.entries(labels).forEach(([key, value]) => {
+        if (value !== defaultLabels[key as keyof typeof defaultLabels]) {
+          params.set(`label_${key}`, value)
+        }
+      })
+    }
+    if (hasOverrides(toolbar, defaultToolbar)) {
+      Object.entries(toolbar).forEach(([key, value]) => {
+        setBooleanParamIfChanged(
+          params,
+          `toolbar_${key}`,
+          value,
+          defaultToolbar[key as keyof typeof defaultToolbar],
+        )
+      })
+    }
+    if (hasOverrides(allowActions, defaultActions)) {
+      Object.entries(allowActions).forEach(([key, value]) => {
+        setBooleanParamIfChanged(
+          params,
+          `action_${key}`,
+          value,
+          defaultActions[key as keyof typeof defaultActions],
+        )
+      })
+    }
+    const nextQuery = params.toString()
+    const nextUrl = nextQuery
+      ? `${window.location.pathname}?${nextQuery}`
+      : window.location.pathname
+    window.history.replaceState({}, '', nextUrl)
+  }, [
+    allowActions,
+    apiUrl,
+    filterExtensionsInput,
+    filterMimeTypesInput,
+    hideTrash,
+    isInitialized,
+    labels,
+    mode,
+    selection,
+    theme,
+    toolbar,
+    viewMode,
+  ])
+
+  const showToast = (message: string) => {
+    addToast({
+      title: 'Selected file',
+      description: message,
+    })
+  }
 
   const resolvedTheme = theme === 'system' ? (prefersDark ? 'dark' : 'light') : theme
 
@@ -200,11 +382,6 @@ export function FileManagerDemo() {
           }`}
         >
           <div className={styles.panelCard}>
-            <div className={styles.panelHeader}>
-              <h1 className={styles.panelTitle}>Customizer</h1>
-              <p className={styles.panelSubtitle}>Configure UI and copy JSX.</p>
-            </div>
-
             <div className={styles.panelBody}>
               <div className={styles.panelStack}>
                 <section className={styles.section}>
@@ -532,32 +709,34 @@ export function FileManagerDemo() {
                 >
                   {copied ? 'Copied JSX' : 'Copy JSX'}
                 </BaseButton>
-                <BaseButton
-                  className={styles.secondaryButton}
-                  onClick={() => {
-                    setLabels(defaultLabels)
-                    setToolbar(defaultToolbar)
-                    setMode('manager')
-                    setSelection('multiple')
-                    setViewMode('grid')
-                    setTheme('system')
-                    setApiUrl('/api/s3')
-                    setHideTrash(false)
-                    setFilterExtensionsInput('')
-                    setFilterMimeTypesInput('')
-                    setAllowActions({
-                      upload: true,
-                      createFolder: true,
-                      delete: true,
-                      rename: true,
-                      move: true,
-                      copy: true,
-                      restore: true,
-                    })
-                  }}
-                >
-                  Reset defaults
-                </BaseButton>
+                <div className={styles.footerRow}>
+                  <BaseButton
+                    className={styles.resetButton}
+                    onClick={() => {
+                      setLabels(defaultLabels)
+                      setToolbar(defaultToolbar)
+                      setMode('manager')
+                      setSelection('multiple')
+                      setViewMode('grid')
+                      setTheme('system')
+                      setApiUrl('/api/s3')
+                      setHideTrash(false)
+                      setFilterExtensionsInput('')
+                      setFilterMimeTypesInput('')
+                      setAllowActions({
+                        upload: true,
+                        createFolder: true,
+                        delete: true,
+                        rename: true,
+                        move: true,
+                        copy: true,
+                        restore: true,
+                      })
+                    }}
+                  >
+                    Reset defaults
+                  </BaseButton>
+                </div>
               </div>
             </div>
           </div>
@@ -587,6 +766,13 @@ export function FileManagerDemo() {
                     selection={selection}
                     viewMode={viewMode}
                     onViewModeChange={setViewMode}
+                    onConfirm={(entries) => {
+                      if (mode !== 'picker') return
+                      console.log('Selection confirmed:', entries)
+                      if (entries.length === 0) return
+                      const names = entries.map((entry) => entry.name).join(', ')
+                      showToast(names)
+                    }}
                     toolbar={toolbar}
                     labels={labels}
                     hideTrash={hideTrash}
@@ -610,6 +796,23 @@ export function FileManagerDemo() {
           </div>
         </main>
       </div>
+      <Toast.Portal container={portalContainerRef.current ?? undefined}>
+        <Toast.Viewport className={styles.toastViewport}>
+          {toasts.map((toast) => (
+            <Toast.Root key={toast.id} toast={toast} className={styles.toastRoot}>
+              <Toast.Content className={styles.toastContent}>
+                <Toast.Title className={styles.toastTitle} />
+                <Toast.Description className={styles.toastDescription} />
+                <Toast.Close className={styles.toastClose} aria-label="Close">
+                  <span className={styles.toastCloseIcon} aria-hidden>
+                    ×
+                  </span>
+                </Toast.Close>
+              </Toast.Content>
+            </Toast.Root>
+          ))}
+        </Toast.Viewport>
+      </Toast.Portal>
     </div>
   )
 }

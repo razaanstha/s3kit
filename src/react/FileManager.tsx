@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef, CSSProperties } from 'react'
 import { S3FileManagerClient } from '../client/client'
-import type { S3Entry, S3SearchOptions } from '../core/types'
+import type { S3Entry, S3FileAttributes, S3FolderLock, S3SearchOptions } from '../core/types'
 import {
   Folder,
   House,
@@ -144,10 +144,17 @@ export function FileManager({
     url: string
     entry: S3Entry
   } | null>(null)
+  const [fileAttributes, setFileAttributes] = useState<S3FileAttributes | null>(null)
+  const [attributesLoading, setAttributesLoading] = useState(false)
+  const [attributesError, setAttributesError] = useState<string | null>(null)
   const [isPreviewClosing, setIsPreviewClosing] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(320)
   const [isResizing, setIsResizing] = useState(false)
   const [inlinePreviews, setInlinePreviews] = useState<Record<string, string>>({})
+  const [folderLocks, setFolderLocks] = useState<
+    Record<string, { status: 'loading' | 'locked' | 'unlocked'; lock?: S3FolderLock }>
+  >({})
+  const [pendingFolderMoves, setPendingFolderMoves] = useState<Set<string>>(new Set())
   const [isSelectionMode, setIsSelectionMode] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [sortBy, setSortBy] = useState<'name' | 'date' | 'size' | 'type'>('name')
@@ -218,7 +225,132 @@ export function FileManager({
   const longPressTimerRef = useRef<number | null>(null)
   const suppressClickRef = useRef(false)
   const dragSelectionBaseRef = useRef<Set<string>>(new Set())
+
+  const requestFolderLock = useCallback(
+    (path: string) => {
+      if (folderLocks[path]) return
+      setFolderLocks((prev) => ({ ...prev, [path]: { status: 'loading' } }))
+
+      const run = async () => {
+        try {
+          const out = await client.getFolderLock({ path })
+          const isActive =
+            out?.expiresAt && new Date(out.expiresAt).getTime() > Date.now() ? true : false
+          setFolderLocks((prev) => ({
+            ...prev,
+            [path]: isActive && out ? { status: 'locked', lock: out } : { status: 'unlocked' },
+          }))
+        } catch {
+          setFolderLocks((prev) => ({ ...prev, [path]: { status: 'unlocked' } }))
+        }
+      }
+
+      void run()
+    },
+    [client, folderLocks],
+  )
+
+  const getFolderLockLabel = useCallback(
+    (entry: S3Entry) => {
+      if (entry.type !== 'folder') return null
+      if (entry.path === `${TRASH_PATH}/`) return null
+      if (pendingFolderMoves.has(entry.path)) return 'Renaming'
+      const lock = folderLocks[entry.path]
+      if (lock?.status === 'locked') return 'Locked'
+      return null
+    },
+    [folderLocks, pendingFolderMoves],
+  )
+
+  const handleEntryHover = useCallback(
+    (entry: S3Entry) => {
+      setHoverRow(entry.path)
+      if (entry.type === 'folder' && entry.path !== `${TRASH_PATH}/`) {
+        requestFolderLock(entry.path)
+      }
+    },
+    [requestFolderLock],
+  )
+
+  const resolveEntryEtag = useCallback(
+    (entry: S3Entry) => {
+      if (entry.type !== 'file') return undefined
+      if (fileAttributes?.path === entry.path && fileAttributes.etag) return fileAttributes.etag
+      return entry.etag
+    },
+    [fileAttributes],
+  )
+
+  const parseApiError = useCallback((err: unknown) => {
+    const fallback =
+      err instanceof Error
+        ? { code: undefined as string | undefined, message: err.message }
+        : { code: undefined as string | undefined, message: 'Request failed' }
+    if (!(err instanceof Error)) return fallback
+    const raw = err.message
+    if (!raw.trim().startsWith('{')) return fallback
+    try {
+      const parsed = JSON.parse(raw) as { error?: { code?: string; message?: string } }
+      if (parsed?.error) {
+        return { code: parsed.error.code, message: parsed.error.message ?? raw }
+      }
+    } catch {
+      return fallback
+    }
+    return fallback
+  }, [])
+
+  const isConflictError = useCallback(
+    (err: unknown) => {
+      const info = parseApiError(err)
+      if (info.code === 'conflict') return true
+      if (info.message && /conflict|already in progress/i.test(info.message)) return true
+      return false
+    },
+    [parseApiError],
+  )
+
+  const showConflictAlert = useCallback(() => {
+    window.alert('This item changed elsewhere. Refresh and try again.')
+  }, [])
+
+  const renderFolderLockBadge = useCallback(
+    (entry: S3Entry, variant: 'grid' | 'list') => {
+      const label = getFolderLockLabel(entry)
+      if (!label) return null
+      const isPending = label === 'Renaming'
+
+      const style: CSSProperties = {
+        display: 'inline-flex',
+        alignItems: 'center',
+        fontSize: 10,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: '0.04em',
+        padding: '4px 6px',
+        borderRadius: 6,
+        border: `1px solid ${isPending ? theme.accent : theme.border}`,
+        backgroundColor: isPending ? theme.accent : theme.bgSecondary,
+        color: isPending ? theme.bg : theme.textSecondary,
+      }
+
+      return (
+        <div
+          style={
+            variant === 'grid'
+              ? { ...style, position: 'absolute', top: 10, right: 10 }
+              : { ...style, marginLeft: 8 }
+          }
+        >
+          {label}
+        </div>
+      )
+    },
+    [getFolderLockLabel, theme],
+  )
+
   const lastSelectionSigRef = useRef<string>('')
+  const lastSelectedPathsRef = useRef<Set<string>>(new Set())
   const [dragSelect, setDragSelect] = useState<{
     active: boolean
     startX: number
@@ -556,6 +688,10 @@ export function FileManager({
     }
   }, [hideTrash, view])
 
+  useEffect(() => {
+    lastSelectedPathsRef.current = new Set()
+  }, [mode])
+
   // Debounced search effect
   useEffect(() => {
     const timeoutId = setTimeout(() => {
@@ -579,7 +715,16 @@ export function FileManager({
     if (sig === lastSelectionSigRef.current) return
     lastSelectionSigRef.current = sig
     onSelectionChange?.(selectedEntries)
-  }, [entries, searchResults, selected, searchQuery, onSelectionChange])
+    const nextSelectedPaths = new Set(selectedEntries.map((entry) => entry.path))
+    if (mode === 'picker' && onFileSelect) {
+      selectedEntries.forEach((entry) => {
+        if (entry.type === 'file' && !lastSelectedPathsRef.current.has(entry.path)) {
+          onFileSelect(entry)
+        }
+      })
+    }
+    lastSelectedPathsRef.current = nextSelectedPaths
+  }, [entries, searchResults, selected, searchQuery, onSelectionChange, onFileSelect, mode])
 
   useEffect(() => {
     const source = searchQuery.trim() ? searchResults : entries
@@ -634,6 +779,50 @@ export function FileManager({
       setPreviewData(null)
     }
   }, [selected, lastSelected, client])
+
+  useEffect(() => {
+    if (selected.size !== 1) return
+    const selectedPath = Array.from(selected)[0]
+    if (!selectedPath) return
+    const source = searchQuery.trim() ? searchResults : entries
+    const entry = source.find((item) => item.path === selectedPath)
+    if (entry?.type === 'folder') {
+      requestFolderLock(entry.path)
+    }
+  }, [entries, requestFolderLock, searchQuery, searchResults, selected])
+
+  useEffect(() => {
+    const entry = previewData?.entry
+    if (!entry || entry.type !== 'file') {
+      setFileAttributes(null)
+      setAttributesError(null)
+      return
+    }
+
+    let cancelled = false
+    setAttributesLoading(true)
+    setAttributesError(null)
+
+    const run = async () => {
+      try {
+        const out = await client.getFileAttributes({ path: entry.path })
+        if (cancelled) return
+        setFileAttributes(out)
+      } catch (e) {
+        if (cancelled) return
+        const message = e instanceof Error ? e.message : 'Failed to load attributes'
+        setAttributesError(message)
+        setFileAttributes(null)
+      } finally {
+        if (!cancelled) setAttributesLoading(false)
+      }
+    }
+
+    void run()
+    return () => {
+      cancelled = true
+    }
+  }, [client, previewData?.entry])
 
   useEffect(() => {
     if (previewData) {
@@ -802,6 +991,7 @@ export function FileManager({
     if (isRenaming) return
     const target = renameTarget ?? lastSelected
     if (!target) return
+    const isFolder = target.type === 'folder'
     const oldPath = target.path
     const parent = getParentPath(oldPath)
     const existingNames = new Set(
@@ -817,16 +1007,40 @@ export function FileManager({
     }
 
     try {
+      if (isFolder) {
+        setPendingFolderMoves((prev) => {
+          const next = new Set(prev)
+          next.add(oldPath)
+          return next
+        })
+      }
       setIsRenaming(true)
-      await client.move({ fromPath: oldPath, toPath: newPath })
+      const renameEtag = target.type === 'file' ? resolveEntryEtag(target) : undefined
+      await client.move({
+        fromPath: oldPath,
+        toPath: newPath,
+        ...(renameEtag ? { ifMatch: renameEtag } : {}),
+      })
       setRenameOpen(false)
       setRenameTarget(null)
       refresh()
     } catch (e) {
       console.error('Rename failed', e)
-      alert('Rename failed')
+      if (isConflictError(e)) {
+        showConflictAlert()
+      } else {
+        alert('Rename failed')
+      }
     } finally {
       setIsRenaming(false)
+      if (isFolder) {
+        setPendingFolderMoves((prev) => {
+          const next = new Set(prev)
+          next.delete(oldPath)
+          return next
+        })
+        setFolderLocks((prev) => ({ ...prev, [oldPath]: { status: 'unlocked' } }))
+      }
     }
   }
 
@@ -836,13 +1050,27 @@ export function FileManager({
       for (const target of targets) {
         if (target.path.startsWith(TRASH_PATH)) continue
         const dest = joinPath(TRASH_PATH, target.path)
-        await client.move({ fromPath: target.path, toPath: dest })
+        const moveEtag = target.type === 'file' ? resolveEntryEtag(target) : undefined
+        await client.move({
+          fromPath: target.path,
+          toPath: dest,
+          ...(moveEtag ? { ifMatch: moveEtag } : {}),
+        })
       }
     } else {
-      const files = targets.filter((e) => e.type === 'file').map((e) => e.path)
+      const files = targets.filter((e) => e.type === 'file')
       const folders = targets.filter((e) => e.type === 'folder')
 
-      if (files.length > 0) await client.deleteFiles({ paths: files })
+      if (files.length > 0)
+        await client.deleteFiles({
+          items: files.map((file) => {
+            const deleteEtag = resolveEntryEtag(file)
+            return {
+              path: file.path,
+              ...(deleteEtag ? { ifMatch: deleteEtag } : {}),
+            }
+          }),
+        })
       for (const folder of folders) {
         await client.deleteFolder({ path: folder.path, recursive: true })
       }
@@ -861,7 +1089,11 @@ export function FileManager({
       refresh()
     } catch (e) {
       console.error('Delete failed', e)
-      alert('Delete failed')
+      if (isConflictError(e)) {
+        showConflictAlert()
+      } else {
+        alert('Delete failed')
+      }
     } finally {
       setIsDeleting(false)
     }
@@ -873,7 +1105,12 @@ export function FileManager({
       if (!target.path.startsWith(TRASH_PATH)) continue
       const originalPath = target.path.slice(TRASH_PATH.length + 1)
       if (!originalPath) continue
-      await client.move({ fromPath: target.path, toPath: originalPath })
+      const restoreEtag = target.type === 'file' ? resolveEntryEtag(target) : undefined
+      await client.move({
+        fromPath: target.path,
+        toPath: originalPath,
+        ...(restoreEtag ? { ifMatch: restoreEtag } : {}),
+      })
     }
   }
 
@@ -881,8 +1118,17 @@ export function FileManager({
     if (!can.restore) return
     const source = searchQuery.trim() ? searchResults : entries
     const targets = source.filter((e) => selected.has(e.path))
-    await restoreEntries(targets)
-    refresh()
+    try {
+      await restoreEntries(targets)
+      refresh()
+    } catch (e) {
+      console.error('Restore failed', e)
+      if (isConflictError(e)) {
+        showConflictAlert()
+      } else {
+        alert('Restore failed')
+      }
+    }
   }
 
   async function onEmptyTrash() {
@@ -1242,14 +1488,29 @@ export function FileManager({
     const dest = window.prompt('Copy to folder path', path || '')
     if (!dest) return
     const baseDest = dest.replace(/\/+$/, '')
-    for (const entry of entriesToCopy) {
-      if (entry.path.startsWith(TRASH_PATH)) continue
-      const targetName = entry.name || entry.path.split('/').pop() || entry.path
-      const toPath =
-        entry.type === 'folder'
-          ? `${joinPath(baseDest, targetName)}/`
-          : joinPath(baseDest, targetName)
-      await client.copy({ fromPath: entry.path, toPath })
+    try {
+      for (const entry of entriesToCopy) {
+        if (entry.path.startsWith(TRASH_PATH)) continue
+        const targetName = entry.name || entry.path.split('/').pop() || entry.path
+        const toPath =
+          entry.type === 'folder'
+            ? `${joinPath(baseDest, targetName)}/`
+            : joinPath(baseDest, targetName)
+        const copyEtag = entry.type === 'file' ? resolveEntryEtag(entry) : undefined
+        await client.copy({
+          fromPath: entry.path,
+          toPath,
+          ...(copyEtag ? { ifMatch: copyEtag } : {}),
+        })
+      }
+    } catch (e) {
+      console.error('Copy failed', e)
+      if (isConflictError(e)) {
+        showConflictAlert()
+      } else {
+        alert('Copy failed')
+      }
+      return
     }
     refresh()
   }
@@ -1259,14 +1520,29 @@ export function FileManager({
     const dest = window.prompt('Move to folder path', path || '')
     if (!dest) return
     const baseDest = dest.replace(/\/+$/, '')
-    for (const entry of entriesToMove) {
-      if (entry.path.startsWith(TRASH_PATH)) continue
-      const targetName = entry.name || entry.path.split('/').pop() || entry.path
-      const toPath =
-        entry.type === 'folder'
-          ? `${joinPath(baseDest, targetName)}/`
-          : joinPath(baseDest, targetName)
-      await client.move({ fromPath: entry.path, toPath })
+    try {
+      for (const entry of entriesToMove) {
+        if (entry.path.startsWith(TRASH_PATH)) continue
+        const targetName = entry.name || entry.path.split('/').pop() || entry.path
+        const toPath =
+          entry.type === 'folder'
+            ? `${joinPath(baseDest, targetName)}/`
+            : joinPath(baseDest, targetName)
+        const moveEtag = entry.type === 'file' ? resolveEntryEtag(entry) : undefined
+        await client.move({
+          fromPath: entry.path,
+          toPath,
+          ...(moveEtag ? { ifMatch: moveEtag } : {}),
+        })
+      }
+    } catch (e) {
+      console.error('Move failed', e)
+      if (isConflictError(e)) {
+        showConflictAlert()
+      } else {
+        alert('Move failed')
+      }
+      return
     }
     refresh()
   }
@@ -2142,7 +2418,7 @@ export function FileManager({
                                 handleEntryClickWithSelection(entry, index, filteredEntries, e)
                               }
                               onDoubleClick={() => openEntry(entry)}
-                              onMouseEnter={() => setHoverRow(entry.path)}
+                              onMouseEnter={() => handleEntryHover(entry)}
                               onMouseLeave={() => setHoverRow(null)}
                               onTouchStart={() => {
                                 if (!isMobile) return
@@ -2178,6 +2454,7 @@ export function FileManager({
                               >
                                 {entryLabel}
                               </div>
+                              {renderFolderLockBadge(entry, 'grid')}
                             </div>
                           )
                         }
@@ -2212,7 +2489,7 @@ export function FileManager({
                                 handleEntryClickWithSelection(entry, index, filteredEntries, e)
                               }
                               onDoubleClick={() => openEntry(entry)}
-                              onMouseEnter={() => setHoverRow(entry.path)}
+                              onMouseEnter={() => handleEntryHover(entry)}
                               onMouseLeave={() => setHoverRow(null)}
                               onTouchStart={() => {
                                 if (!isMobile) return
@@ -2299,7 +2576,7 @@ export function FileManager({
                                   e.stopPropagation()
                                 }
                               }}
-                              onMouseEnter={() => setHoverRow(entry.path)}
+                              onMouseEnter={() => handleEntryHover(entry)}
                               onMouseLeave={() => setHoverRow(null)}
                               onTouchStart={() => {
                                 if (!isMobile) return
@@ -2336,6 +2613,7 @@ export function FileManager({
                               >
                                 {entryLabel}
                               </div>
+                              {renderFolderLockBadge(entry, 'grid')}
                             </ContextMenu.Trigger>
 
                             {/* Context Menu (same as list view) */}
@@ -2586,7 +2864,7 @@ export function FileManager({
                         handleEntryClickWithSelection(entry, index, filteredEntries, e)
                       }}
                       onDoubleClick={() => openEntry(entry)}
-                      onMouseEnter={() => setHoverRow(entry.path)}
+                      onMouseEnter={() => handleEntryHover(entry)}
                       onMouseLeave={() => setHoverRow(null)}
                       onTouchStart={() => {
                         if (!isMobile) return
@@ -2684,7 +2962,7 @@ export function FileManager({
                         handleEntryClickWithSelection(entry, index, filteredEntries, e)
                       }}
                       onDoubleClick={() => openEntry(entry)}
-                      onMouseEnter={() => setHoverRow(entry.path)}
+                      onMouseEnter={() => handleEntryHover(entry)}
                       onMouseLeave={() => setHoverRow(null)}
                       onTouchStart={() => {
                         if (!isMobile) return
@@ -2765,6 +3043,7 @@ export function FileManager({
                             })()
                           )}
                           {entryLabel}
+                          {renderFolderLockBadge(entry, 'list')}
                         </div>
                         {isMobile && (
                           <div
@@ -2849,7 +3128,7 @@ export function FileManager({
                         }
                         e.stopPropagation()
                       }}
-                      onMouseEnter={() => setHoverRow(entry.path)}
+                      onMouseEnter={() => handleEntryHover(entry)}
                       onMouseLeave={() => setHoverRow(null)}
                       onTouchStart={() => {
                         if (!isMobile) return
@@ -2931,6 +3210,7 @@ export function FileManager({
                             })()
                           )}
                           {entryLabel}
+                          {renderFolderLockBadge(entry, 'list')}
                         </div>
                         {isMobile && (
                           <div
@@ -3564,6 +3844,74 @@ export function FileManager({
                       : '--'}
                   </div>
                 </div>
+
+                {attributesLoading && (
+                  <div className={fileManagerStyles.metaItem}>
+                    <div className={fileManagerStyles.metaLabel}>Attributes</div>
+                    <div className={fileManagerStyles.metaValue}>Loading...</div>
+                  </div>
+                )}
+
+                {attributesError && (
+                  <div className={fileManagerStyles.metaItem}>
+                    <div className={fileManagerStyles.metaLabel}>Attributes</div>
+                    <div className={fileManagerStyles.metaValue}>{attributesError}</div>
+                  </div>
+                )}
+
+                {!attributesLoading && !attributesError && previewDisplay.entry.type === 'file' && (
+                  <>
+                    <div className={fileManagerStyles.metaItem}>
+                      <div className={fileManagerStyles.metaLabel}>Content Type</div>
+                      <div className={fileManagerStyles.metaValue}>
+                        {fileAttributes?.contentType ?? '--'}
+                      </div>
+                    </div>
+                    <div className={fileManagerStyles.metaItem}>
+                      <div className={fileManagerStyles.metaLabel}>Cache Control</div>
+                      <div className={fileManagerStyles.metaValue}>
+                        {fileAttributes?.cacheControl ?? '--'}
+                      </div>
+                    </div>
+                    <div className={fileManagerStyles.metaItem}>
+                      <div className={fileManagerStyles.metaLabel}>Disposition</div>
+                      <div className={fileManagerStyles.metaValue}>
+                        {fileAttributes?.contentDisposition ?? '--'}
+                      </div>
+                    </div>
+                    <div className={fileManagerStyles.metaItem}>
+                      <div className={fileManagerStyles.metaLabel}>ETag</div>
+                      <div className={fileManagerStyles.metaValue}>
+                        {fileAttributes?.etag ?? previewDisplay.entry.etag ?? '--'}
+                      </div>
+                    </div>
+                    <div className={fileManagerStyles.metaItem}>
+                      <div className={fileManagerStyles.metaLabel}>Expires</div>
+                      <div className={fileManagerStyles.metaValue}>
+                        {fileAttributes?.expiresAt
+                          ? new Date(fileAttributes.expiresAt).toLocaleString()
+                          : '--'}
+                      </div>
+                    </div>
+                    <div className={fileManagerStyles.metaItem}>
+                      <div className={fileManagerStyles.metaLabel}>Metadata</div>
+                      <div className={fileManagerStyles.metaValue}>
+                        {fileAttributes?.metadata &&
+                        Object.keys(fileAttributes.metadata).length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            {Object.entries(fileAttributes.metadata).map(([k, v]) => (
+                              <div key={k}>
+                                {k}: {v}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          '--'
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <div
                   style={{

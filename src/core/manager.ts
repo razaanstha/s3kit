@@ -2,6 +2,8 @@ import {
   CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  HeadObjectCommand,
+  type HeadObjectCommandOutput,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -14,12 +16,16 @@ import type {
   S3CreateFolderOptions,
   S3DeleteFilesOptions,
   S3DeleteFolderOptions,
+  S3FileAttributes,
   S3FileEntry,
   S3FileManagerAuthContext,
   S3FileManagerAuthorizationMode,
   S3FileManagerHooks,
   S3FileManagerOptions,
+  S3FolderLock,
   S3FolderEntry,
+  S3GetFolderLockOptions,
+  S3GetFileAttributesOptions,
   S3GetPreviewUrlOptions,
   S3GetPreviewUrlResult,
   S3ListOptions,
@@ -29,8 +35,9 @@ import type {
   S3PreparedUpload,
   S3SearchOptions,
   S3SearchResult,
+  S3SetFileAttributesOptions,
 } from './types'
-import { S3FileManagerAuthorizationError } from './errors'
+import { S3FileManagerAuthorizationError, S3FileManagerConflictError } from './errors'
 
 const DEFAULT_DELIMITER = '/'
 
@@ -66,6 +73,74 @@ function isNoSuchKeyError(err: unknown): boolean {
     return err.message.includes('The specified key does not exist')
   }
   return false
+}
+
+function isNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  if ('name' in err && (err.name === 'NotFound' || err.name === 'NoSuchKey')) return true
+  if ('$metadata' in err) {
+    const meta = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
+    if (meta?.httpStatusCode === 404) return true
+  }
+  return false
+}
+
+function isPreconditionFailedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  if ('name' in err && err.name === 'PreconditionFailed') return true
+  if ('Code' in err && err.Code === 'PreconditionFailed') return true
+  if ('$metadata' in err) {
+    const meta = (err as { $metadata?: { httpStatusCode?: number } }).$metadata
+    if (meta?.httpStatusCode === 412) return true
+  }
+  if ('message' in err && typeof err.message === 'string') {
+    return err.message.includes('PreconditionFailed')
+  }
+  return false
+}
+
+function resolveExpiresAt(expiresAt: string | null | undefined): Date | undefined {
+  if (expiresAt === null) return undefined
+  if (!expiresAt) return undefined
+  const parsed = new Date(expiresAt)
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new Error('Invalid expiresAt value')
+  }
+  return parsed
+}
+
+function toAttributes(path: string, obj: HeadObjectCommandOutput): S3FileAttributes {
+  const {
+    ContentLength,
+    LastModified,
+    ETag,
+    ContentType,
+    CacheControl,
+    ContentDisposition,
+    Metadata,
+    Expires,
+  } = obj as {
+    ContentLength?: number
+    LastModified?: Date
+    ETag?: string
+    ContentType?: string
+    CacheControl?: string
+    ContentDisposition?: string
+    Metadata?: Record<string, string>
+    Expires?: Date
+  }
+
+  return {
+    path,
+    ...(ContentLength !== undefined ? { size: ContentLength } : {}),
+    ...(LastModified ? { lastModified: LastModified.toISOString() } : {}),
+    ...(ETag !== undefined ? { etag: ETag } : {}),
+    ...(ContentType ? { contentType: ContentType } : {}),
+    ...(CacheControl ? { cacheControl: CacheControl } : {}),
+    ...(ContentDisposition ? { contentDisposition: ContentDisposition } : {}),
+    ...(Metadata ? { metadata: Metadata } : {}),
+    ...(Expires ? { expiresAt: Expires.toISOString() } : {}),
+  }
 }
 
 async function* listAllKeys(
@@ -115,6 +190,9 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
   private readonly delimiter: string
   private readonly hooks: S3FileManagerHooks<FileExtra, FolderExtra> | undefined
   private readonly authorizationMode: S3FileManagerAuthorizationMode
+  private readonly lockFolderMoves: boolean
+  private readonly lockPrefix: string
+  private readonly lockTtlSeconds: number
 
   constructor(s3: S3Client, options: S3FileManagerOptions<FileExtra, FolderExtra>) {
     this.s3 = s3
@@ -123,6 +201,9 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
     this.rootPrefix = ensureTrailingDelimiter(trimSlashes(options.rootPrefix ?? ''), this.delimiter)
     this.hooks = options.hooks
     this.authorizationMode = options.authorizationMode ?? 'deny-by-default'
+    this.lockFolderMoves = options.lockFolderMoves ?? true
+    this.lockPrefix = options.lockPrefix ?? '.s3kit/locks'
+    this.lockTtlSeconds = options.lockTtlSeconds ?? 60 * 15
   }
 
   private async authorize(
@@ -164,6 +245,98 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
       throw new Error('Key is outside of rootPrefix')
     }
     return key.slice(this.rootPrefix.length)
+  }
+
+  private lockKeyForPath(path: string): string {
+    const safe = encodeURIComponent(path).replace(/%2F/g, '__')
+    const prefix = ensureTrailingDelimiter(trimSlashes(this.lockPrefix), this.delimiter)
+    return `${this.rootPrefix}${prefix}${safe}.json`
+  }
+
+  private async readFolderLockByKey(key: string): Promise<S3FolderLock | null> {
+    try {
+      const out = await this.s3.send(
+        new HeadObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+        }),
+      )
+      const meta = out.Metadata ?? {}
+      const operation = meta.op === 'folder.move' ? 'folder.move' : undefined
+      const fromPath = meta.from
+      const toPath = meta.to
+      const startedAt = meta.startedat
+      const expiresAt = meta.expiresat ?? (out.Expires ? out.Expires.toISOString() : undefined)
+      if (!operation || !fromPath || !toPath || !startedAt || !expiresAt) return null
+      return {
+        path: fromPath,
+        operation,
+        fromPath,
+        toPath,
+        startedAt,
+        expiresAt,
+        ...(meta.owner ? { owner: meta.owner } : {}),
+      }
+    } catch (err) {
+      if (isNotFoundError(err)) return null
+      throw err
+    }
+  }
+
+  private async acquireFolderMoveLock(
+    fromPath: string,
+    toPath: string,
+    ctx: S3FileManagerAuthContext,
+  ): Promise<string> {
+    const startedAt = new Date().toISOString()
+    const expiresAt = new Date(Date.now() + this.lockTtlSeconds * 1000).toISOString()
+    const key = this.lockKeyForPath(fromPath)
+
+    const writeLock = async () => {
+      await this.s3.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          ContentType: 'application/json',
+          Expires: new Date(expiresAt),
+          Metadata: {
+            op: 'folder.move',
+            from: fromPath,
+            to: toPath,
+            startedat: startedAt,
+            expiresat: expiresAt,
+            ...(ctx.userId ? { owner: String(ctx.userId) } : {}),
+          },
+          IfNoneMatch: '*',
+          Body: '',
+        }),
+      )
+    }
+
+    try {
+      await writeLock()
+      return key
+    } catch (err) {
+      if (!isPreconditionFailedError(err)) throw err
+      const existing = await this.readFolderLockByKey(key)
+      if (existing?.expiresAt) {
+        const exp = new Date(existing.expiresAt)
+        if (Number.isFinite(exp.getTime()) && exp.getTime() <= Date.now()) {
+          await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }))
+          await writeLock()
+          return key
+        }
+      }
+      throw new S3FileManagerConflictError('Folder rename already in progress')
+    }
+  }
+
+  private async releaseFolderMoveLock(key: string): Promise<void> {
+    try {
+      await this.s3.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }))
+    } catch {
+      // Best effort cleanup
+    }
   }
 
   private makeFolderEntry(path: string): S3FolderEntry<FolderExtra> {
@@ -326,13 +499,44 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
     options: S3DeleteFilesOptions,
     ctx: S3FileManagerAuthContext = {},
   ): Promise<void> {
-    const paths = options.paths.map((p) => normalizePath(p))
-    for (const path of paths) {
-      await this.authorize({ action: 'file.delete', path, ctx })
+    const items: Array<{ path: string; ifMatch?: string; ifNoneMatch?: string }> | undefined =
+      options.items ?? options.paths?.map((path) => ({ path }))
+    if (!items || items.length === 0) return
+
+    const normalizedItems = items.map((item) => ({
+      path: normalizePath(item.path),
+      ifMatch: item.ifMatch,
+      ifNoneMatch: item.ifNoneMatch,
+    }))
+
+    for (const item of normalizedItems) {
+      await this.authorize({ action: 'file.delete', path: item.path, ctx })
     }
 
-    const keys = paths.map((p) => this.pathToKey(p))
-    await deleteKeysInBatches(this.s3, this.bucket, keys)
+    const hasConditions = normalizedItems.some((item) => item.ifMatch || item.ifNoneMatch)
+    if (!hasConditions) {
+      const keys = normalizedItems.map((item) => this.pathToKey(item.path))
+      await deleteKeysInBatches(this.s3, this.bucket, keys)
+      return
+    }
+
+    for (const item of normalizedItems) {
+      try {
+        await this.s3.send(
+          new DeleteObjectCommand({
+            Bucket: this.bucket,
+            Key: this.pathToKey(item.path),
+            ...(item.ifMatch ? { IfMatch: item.ifMatch } : {}),
+            ...(item.ifNoneMatch ? { IfNoneMatch: item.ifNoneMatch } : {}),
+          }),
+        )
+      } catch (err) {
+        if (isPreconditionFailedError(err)) {
+          throw new S3FileManagerConflictError('Delete conflict')
+        }
+        throw err
+      }
+    }
   }
 
   async copy(options: S3CopyOptions, ctx: S3FileManagerAuthContext = {}): Promise<void> {
@@ -396,13 +600,21 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
     const fromKey = this.pathToKey(fromPath)
     const toKey = this.pathToKey(toPath)
 
-    await this.s3.send(
-      new CopyObjectCommand({
-        Bucket: this.bucket,
-        Key: toKey,
-        CopySource: encodeS3CopySource(this.bucket, fromKey),
-      }),
-    )
+    try {
+      await this.s3.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          Key: toKey,
+          CopySource: encodeS3CopySource(this.bucket, fromKey),
+          ...(options.ifMatch ? { CopySourceIfMatch: options.ifMatch } : {}),
+        }),
+      )
+    } catch (err) {
+      if (isPreconditionFailedError(err)) {
+        throw new S3FileManagerConflictError('Copy conflict')
+      }
+      throw err
+    }
   }
 
   async move(options: S3MoveOptions, ctx: S3FileManagerAuthContext = {}): Promise<void> {
@@ -414,6 +626,7 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
     if (isFolder) {
       const fromPathWithSlash = ensureTrailingDelimiter(fromPath, this.delimiter)
       const toPathWithSlash = ensureTrailingDelimiter(toPath, this.delimiter)
+      let lockKey: string | null = null
 
       await this.authorize({
         action: 'folder.move',
@@ -422,18 +635,49 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
         ctx,
       })
 
-      // Delegate to copy (handles recursion)
-      await this.copy(options, ctx)
+      try {
+        if (this.lockFolderMoves) {
+          lockKey = await this.acquireFolderMoveLock(fromPathWithSlash, toPathWithSlash, ctx)
+        }
 
-      // Delete original folder recursively
-      await this.deleteFolder({ path: fromPathWithSlash, recursive: true }, ctx)
-      return
+        // Delegate to copy (handles recursion)
+        await this.copy(options, ctx)
+
+        // Delete original folder recursively
+        await this.deleteFolder({ path: fromPathWithSlash, recursive: true }, ctx)
+        return
+      } finally {
+        if (lockKey) {
+          await this.releaseFolderMoveLock(lockKey)
+        }
+      }
     }
 
     await this.authorize({ action: 'file.move', fromPath, toPath, ctx })
 
     await this.copy(options, ctx)
-    await this.deleteFiles({ paths: [fromPath] }, ctx)
+    try {
+      await this.deleteFiles(
+        {
+          items: [
+            {
+              path: fromPath,
+              ...(options.ifMatch ? { ifMatch: options.ifMatch } : {}),
+            },
+          ],
+        },
+        ctx,
+      )
+    } catch (err) {
+      if (err instanceof S3FileManagerConflictError) {
+        try {
+          await this.deleteFiles({ paths: [toPath] }, ctx)
+        } catch {
+          // Best effort rollback
+        }
+      }
+      throw err
+    }
   }
 
   async prepareUploads(
@@ -450,6 +694,8 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
 
       const key = this.pathToKey(path)
 
+      const expiresAt = resolveExpiresAt(item.expiresAt)
+
       const cmd = new PutObjectCommand({
         Bucket: this.bucket,
         Key: key,
@@ -457,6 +703,8 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
         CacheControl: item.cacheControl,
         ContentDisposition: item.contentDisposition,
         Metadata: item.metadata,
+        ...(expiresAt ? { Expires: expiresAt } : {}),
+        ...(item.ifNoneMatch ? { IfNoneMatch: item.ifNoneMatch } : {}),
       })
 
       const url = await getSignedUrl(this.s3, cmd, { expiresIn })
@@ -464,6 +712,8 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
       if (item.contentType) headers['Content-Type'] = item.contentType
       if (item.cacheControl) headers['Cache-Control'] = item.cacheControl
       if (item.contentDisposition) headers['Content-Disposition'] = item.contentDisposition
+      if (expiresAt) headers.Expires = expiresAt.toUTCString()
+      if (item.ifNoneMatch) headers['If-None-Match'] = item.ifNoneMatch
       if (item.metadata) {
         for (const [k, v] of Object.entries(item.metadata)) {
           headers[`x-amz-meta-${k}`] = v
@@ -479,6 +729,75 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
     }
 
     return result
+  }
+
+  async getFileAttributes(
+    options: S3GetFileAttributesOptions,
+    ctx: S3FileManagerAuthContext = {},
+  ): Promise<S3FileAttributes> {
+    const path = normalizePath(options.path)
+    await this.authorize({ action: 'file.attributes.get', path, ctx })
+
+    const key = this.pathToKey(path)
+    const out = await this.s3.send(
+      new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }),
+    )
+
+    return toAttributes(path, out)
+  }
+
+  async setFileAttributes(
+    options: S3SetFileAttributesOptions,
+    ctx: S3FileManagerAuthContext = {},
+  ): Promise<S3FileAttributes> {
+    const path = normalizePath(options.path)
+    await this.authorize({ action: 'file.attributes.set', path, ctx })
+
+    const key = this.pathToKey(path)
+    const current = await this.s3.send(
+      new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }),
+    )
+
+    const baseMetadata = options.metadata ?? (current.Metadata ? { ...current.Metadata } : {})
+    const resolvedExpires =
+      options.expiresAt === undefined ? current.Expires : resolveExpiresAt(options.expiresAt)
+
+    try {
+      await this.s3.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          CopySource: encodeS3CopySource(this.bucket, key),
+          MetadataDirective: 'REPLACE',
+          ContentType: options.contentType ?? current.ContentType,
+          CacheControl: options.cacheControl ?? current.CacheControl,
+          ContentDisposition: options.contentDisposition ?? current.ContentDisposition,
+          Metadata: baseMetadata,
+          ...(resolvedExpires ? { Expires: resolvedExpires } : {}),
+          ...(options.ifMatch ? { CopySourceIfMatch: options.ifMatch } : {}),
+        }),
+      )
+    } catch (err) {
+      if (isPreconditionFailedError(err)) {
+        throw new S3FileManagerConflictError('Attribute update conflict')
+      }
+      throw err
+    }
+
+    const updated = await this.s3.send(
+      new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+      }),
+    )
+
+    return toAttributes(path, updated)
   }
 
   async search(
@@ -584,5 +903,16 @@ export class S3FileManager<FileExtra = unknown, FolderExtra = unknown> {
 
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
     return { path, url, expiresAt }
+  }
+
+  async getFolderLock(
+    options: S3GetFolderLockOptions,
+    ctx: S3FileManagerAuthContext = {},
+  ): Promise<S3FolderLock | null> {
+    const path = ensureTrailingDelimiter(normalizePath(options.path), this.delimiter)
+    await this.authorize({ action: 'folder.lock.get', path, ctx })
+
+    const key = this.lockKeyForPath(path)
+    return await this.readFolderLockByKey(key)
   }
 }

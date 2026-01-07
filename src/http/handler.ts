@@ -1,5 +1,5 @@
 import type { S3FileManager } from '../core/manager'
-import { S3FileManagerAuthorizationError } from '../core/errors'
+import { S3FileManagerAuthorizationError, S3FileManagerConflictError } from '../core/errors'
 import type { S3FileManagerAuthContext } from '../core/types'
 import type { HttpRequest, HttpResponse, S3FileManagerApiOptions } from './types'
 
@@ -45,6 +45,23 @@ function optionalString(value: unknown, key: string): string | undefined {
   if (value === undefined) return undefined
   if (typeof value === 'string') return value
   throw new S3FileManagerHttpError(400, 'invalid_body', `Expected '${key}' to be a string`)
+}
+
+function optionalStringOrNull(value: unknown, key: string): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value === 'string') return value
+  throw new S3FileManagerHttpError(400, 'invalid_body', `Expected '${key}' to be a string`)
+}
+
+function optionalDateStringOrNull(value: unknown, key: string): string | null | undefined {
+  const raw = optionalStringOrNull(value, key)
+  if (raw === undefined || raw === null) return raw
+  const parsed = new Date(raw)
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new S3FileManagerHttpError(400, 'invalid_body', `Expected '${key}' to be a date string`)
+  }
+  return raw
 }
 
 function requiredString(value: unknown, key: string): string {
@@ -138,7 +155,36 @@ function parseDeleteFolderOptions(body: unknown) {
 
 function parseDeleteFilesOptions(body: unknown) {
   const obj = ensureObject(body)
-  return { paths: requiredStringArray(obj.paths, 'paths') }
+  const itemsValue = obj.items
+  const items = Array.isArray(itemsValue)
+    ? itemsValue.map((raw, idx) => {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new S3FileManagerHttpError(
+            400,
+            'invalid_body',
+            `Expected 'items[${idx}]' to be an object`,
+          )
+        }
+        const item = raw as Record<string, unknown>
+        return {
+          path: requiredString(item.path, `items[${idx}].path`),
+          ifMatch: optionalString(item.ifMatch, `items[${idx}].ifMatch`),
+          ifNoneMatch: optionalString(item.ifNoneMatch, `items[${idx}].ifNoneMatch`),
+        }
+      })
+    : undefined
+
+  const paths = obj.paths !== undefined ? requiredStringArray(obj.paths, 'paths') : undefined
+
+  if (!paths && !items) {
+    throw new S3FileManagerHttpError(
+      400,
+      'invalid_body',
+      "Expected 'paths' or 'items' to be provided",
+    )
+  }
+
+  return { ...(paths ? { paths } : {}), ...(items ? { items } : {}) }
 }
 
 function parseCopyMoveOptions(body: unknown) {
@@ -146,6 +192,7 @@ function parseCopyMoveOptions(body: unknown) {
   return {
     fromPath: requiredString(obj.fromPath, 'fromPath'),
     toPath: requiredString(obj.toPath, 'toPath'),
+    ifMatch: optionalString(obj.ifMatch, 'ifMatch'),
   }
 }
 
@@ -174,6 +221,8 @@ function parsePrepareUploadsOptions(body: unknown) {
         `items[${idx}].contentDisposition`,
       ),
       metadata: optionalStringRecord(item.metadata, `items[${idx}].metadata`),
+      expiresAt: optionalDateStringOrNull(item.expiresAt, `items[${idx}].expiresAt`),
+      ifNoneMatch: optionalString(item.ifNoneMatch, `items[${idx}].ifNoneMatch`),
     }
   })
 
@@ -189,6 +238,33 @@ function parsePreviewOptions(body: unknown) {
     path: requiredString(obj.path, 'path'),
     expiresInSeconds: optionalNumber(obj.expiresInSeconds, 'expiresInSeconds'),
     inline: optionalBoolean(obj.inline, 'inline'),
+  }
+}
+
+function parseGetFolderLockOptions(body: unknown) {
+  const obj = ensureObject(body)
+  return {
+    path: requiredString(obj.path, 'path'),
+  }
+}
+
+function parseGetFileAttributesOptions(body: unknown) {
+  const obj = ensureObject(body)
+  return {
+    path: requiredString(obj.path, 'path'),
+  }
+}
+
+function parseSetFileAttributesOptions(body: unknown) {
+  const obj = ensureObject(body)
+  return {
+    path: requiredString(obj.path, 'path'),
+    contentType: optionalString(obj.contentType, 'contentType'),
+    cacheControl: optionalString(obj.cacheControl, 'cacheControl'),
+    contentDisposition: optionalString(obj.contentDisposition, 'contentDisposition'),
+    metadata: optionalStringRecord(obj.metadata, 'metadata'),
+    expiresAt: optionalDateStringOrNull(obj.expiresAt, 'expiresAt'),
+    ifMatch: optionalString(obj.ifMatch, 'ifMatch'),
   }
 }
 
@@ -263,12 +339,36 @@ export function createS3FileManagerHttpHandler<FileExtra = unknown, FolderExtra 
         return { status: 200, headers: { 'content-type': 'application/json' }, body: out as any }
       }
 
+      if (method === 'POST' && path === '/folder/lock/get') {
+        const out = await manager.getFolderLock(parseGetFolderLockOptions(req.body) as any, ctx)
+        return { status: 200, headers: { 'content-type': 'application/json' }, body: out as any }
+      }
+
+      if (method === 'POST' && path === '/file/attributes/get') {
+        const out = await manager.getFileAttributes(
+          parseGetFileAttributesOptions(req.body) as any,
+          ctx,
+        )
+        return { status: 200, headers: { 'content-type': 'application/json' }, body: out as any }
+      }
+
+      if (method === 'POST' && path === '/file/attributes/set') {
+        const out = await manager.setFileAttributes(
+          parseSetFileAttributesOptions(req.body) as any,
+          ctx,
+        )
+        return { status: 200, headers: { 'content-type': 'application/json' }, body: out as any }
+      }
+
       return jsonError(404, 'not_found', 'Route not found')
     } catch (err) {
       if (err instanceof S3FileManagerHttpError) {
         return jsonError(err.status, err.code, err.message)
       }
       if (err instanceof S3FileManagerAuthorizationError) {
+        return jsonError(err.status, err.code, err.message)
+      }
+      if (err instanceof S3FileManagerConflictError) {
         return jsonError(err.status, err.code, err.message)
       }
 

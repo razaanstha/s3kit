@@ -3,11 +3,14 @@ import type {
   S3CreateFolderOptions,
   S3DeleteFilesOptions,
   S3DeleteFolderOptions,
+  S3GetFolderLockOptions,
+  S3GetFileAttributesOptions,
   S3GetPreviewUrlOptions,
   S3ListOptions,
   S3MoveOptions,
   S3PrepareUploadsOptions,
   S3SearchOptions,
+  S3SetFileAttributesOptions,
 } from '../core/types'
 
 export type JsonValue =
@@ -49,6 +52,9 @@ export interface S3FileManagerApiRequestMap {
   'POST /files/move': S3MoveOptions
   'POST /upload/prepare': S3PrepareUploadsOptions
   'POST /preview': S3GetPreviewUrlOptions
+  'POST /folder/lock/get': S3GetFolderLockOptions
+  'POST /file/attributes/get': S3GetFileAttributesOptions
+  'POST /file/attributes/set': S3SetFileAttributesOptions
 }
 
 export interface S3FileManagerApiOptions {

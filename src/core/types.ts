@@ -3,10 +3,13 @@ export type S3FileManagerAction =
   | 'search'
   | 'folder.create'
   | 'folder.delete'
+  | 'folder.lock.get'
   | 'upload.prepare'
   | 'file.delete'
   | 'file.copy'
   | 'file.move'
+  | 'file.attributes.get'
+  | 'file.attributes.set'
   | 'folder.copy'
   | 'folder.move'
   | 'preview.get'
@@ -51,6 +54,7 @@ export interface S3FileEntry<FileExtra = unknown> {
   lastModified?: string
   etag?: string
   contentType?: string
+  expiresAt?: string
   extra?: FileExtra
 }
 
@@ -94,17 +98,24 @@ export interface S3DeleteFolderOptions {
 }
 
 export interface S3DeleteFilesOptions {
-  paths: S3Path[]
+  paths?: S3Path[]
+  items?: Array<{
+    path: S3Path
+    ifMatch?: string
+    ifNoneMatch?: string
+  }>
 }
 
 export interface S3CopyOptions {
   fromPath: S3Path
   toPath: S3Path
+  ifMatch?: string
 }
 
 export interface S3MoveOptions {
   fromPath: S3Path
   toPath: S3Path
+  ifMatch?: string
 }
 
 export interface S3PrepareUploadItem {
@@ -113,6 +124,8 @@ export interface S3PrepareUploadItem {
   cacheControl?: string
   contentDisposition?: string
   metadata?: Record<string, string>
+  expiresAt?: string | null
+  ifNoneMatch?: string
 }
 
 export interface S3PreparedUpload {
@@ -139,6 +152,32 @@ export interface S3GetPreviewUrlResult {
   expiresAt: string
 }
 
+export interface S3GetFileAttributesOptions {
+  path: S3Path
+}
+
+export interface S3SetFileAttributesOptions {
+  path: S3Path
+  contentType?: string
+  cacheControl?: string
+  contentDisposition?: string
+  metadata?: Record<string, string>
+  expiresAt?: string | null
+  ifMatch?: string
+}
+
+export interface S3FileAttributes {
+  path: S3Path
+  size?: number
+  lastModified?: string
+  etag?: string
+  contentType?: string
+  cacheControl?: string
+  contentDisposition?: string
+  metadata?: Record<string, string>
+  expiresAt?: string
+}
+
 export interface S3FileDecorationArgs {
   path: S3Path
   key: string
@@ -163,6 +202,23 @@ export interface S3FileManagerOptions<FileExtra = unknown, FolderExtra = unknown
   bucket: string
   rootPrefix?: string
   delimiter?: string
+  lockFolderMoves?: boolean
+  lockPrefix?: string
+  lockTtlSeconds?: number
   authorizationMode?: S3FileManagerAuthorizationMode
   hooks?: S3FileManagerHooks<FileExtra, FolderExtra>
+}
+
+export interface S3GetFolderLockOptions {
+  path: S3Path
+}
+
+export interface S3FolderLock {
+  path: S3Path
+  operation: 'folder.move'
+  fromPath: S3Path
+  toPath: S3Path
+  startedAt: string
+  expiresAt: string
+  owner?: string
 }
